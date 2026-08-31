@@ -2,9 +2,14 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import {
   ApiKey,
   GenTask,
+  Mode,
+  Ratio,
   Region,
+  Resolution,
   TaskStatus,
   WireLine,
+  API,
+  contentUrlFor,
   estimateCost,
   genFileId,
   genTaskId,
@@ -19,14 +24,15 @@ export interface Toast {
 }
 
 export interface ComposeInput {
-  mode: GenTask["mode"];
+  mode: Mode;
   model: string;
   prompt: string;
-  resolution: GenTask["resolution"];
-  duration: GenTask["duration"];
-  promptOptimizer: boolean;
-  camera?: string;
+  resolution: Resolution;
+  duration: number;
+  ratio: Ratio;
   firstFrame?: string;
+  lastFrame?: string;
+  refs?: string[];
 }
 
 interface AppState {
@@ -52,15 +58,12 @@ interface AppState {
 
 const Ctx = createContext<AppState | null>(null);
 
-const LS_KEY = "mmx-motion-console-v1";
-const CREDITS_BUDGET = 500;
+const LS_KEY = "mmx-motion-console-v3";
+export const CREDITS_BUDGET = 500;
 
-// stage durations in simulated seconds
-const STAGE: Record<"Queueing" | "Preparing" | "Generating", number> = {
-  Queueing: 1.4,
-  Preparing: 2.0,
-  Generating: 6.0,
-};
+// simulated stage durations (seconds)
+const QUEUE_TIME = 1.4;
+const RUN_TIME = 6.5;
 
 interface Persisted {
   tasks: GenTask[];
@@ -70,9 +73,76 @@ interface Persisted {
   creditsUsed: number;
 }
 
+const SPACE = "https://image.qwenlm.ai/generated-images/b4e31982-ddb8-417d-8290-b117e716dd79/_result.png";
+const RAIL = "https://image.qwenlm.ai/generated-images/65ffefe0-4aab-483d-b5d3-5f90eea9aa3e/_result.png";
+const DANCER = "https://image.qwenlm.ai/generated-images/e0b0b702-fa53-4578-a04b-c42d0d134d81/_result.png";
+const FOREST = "https://image.qwenlm.ai/generated-images/8c9b1e20-9892-41d1-bde2-cc8aefe9ed79/_result.png";
+
+function doneTask(partial: Partial<GenTask> & Pick<GenTask, "taskId" | "model" | "prompt" | "resolution" | "duration" | "ratio" | "mode">): GenTask {
+  const createdAt = Date.now() - 1000 * 60 * (8 + Math.floor(Math.random() * 90));
+  return {
+    id: uid(),
+    status: "succeeded",
+    progress: 100,
+    elapsed: QUEUE_TIME + RUN_TIME,
+    polls: 6,
+    cost: estimateCost(partial.model, partial.resolution, partial.duration),
+    createdAt,
+    finishedAt: createdAt + 1000 * (QUEUE_TIME + RUN_TIME + 2),
+    imageUrl: pickStill(partial.prompt).url,
+    contentUrl: contentUrlFor(partial.taskId),
+    ...partial,
+  };
+}
+
 function seed(): Persisted {
   const key: ApiKey = { id: uid(), name: "Sandbox key", key: "sk-sandbox-" + genFileId().slice(0, 20), createdAt: Date.now() };
-  return { tasks: [], keys: [key], activeKeyId: key.id, region: "intl", creditsUsed: 62 };
+  const tasks: GenTask[] = [
+    doneTask({
+      taskId: "424010985738629",
+      model: "MiniMax-H3",
+      mode: "t2v",
+      prompt:
+        "Epic space-opera theatrical teaser: a female captain stands alone before a massive observation window as the last fleet gathers and jumps away in a blinding flash, the bridge shaking, leaving her behind.",
+      resolution: "2K",
+      duration: 5,
+      ratio: "16:9",
+      imageUrl: SPACE,
+    }),
+    doneTask({
+      taskId: "424011067281114",
+      model: "MiniMax-H3",
+      mode: "t2v",
+      prompt: "A retro-futuristic silver monorail glides across an elevated rail over the amber desert at golden hour, long shadows stretching, dust glittering in the anamorphic flare.",
+      resolution: "768P",
+      duration: 10,
+      ratio: "21:9",
+      imageUrl: RAIL,
+    }),
+    doneTask({
+      taskId: "424011212905487",
+      model: "MiniMax-H3",
+      mode: "i2v",
+      prompt: "The dancer completes her spin, fabric snapping into a spiral, stage light flaring as she lands in a slow controlled collapse.",
+      resolution: "768P",
+      duration: 8,
+      ratio: "adaptive",
+      firstFrame: DANCER,
+      imageUrl: DANCER,
+    }),
+    doneTask({
+      taskId: "424011338450922",
+      model: "MiniMax-H3",
+      mode: "r2v",
+      prompt: "A small glowing creature hops between ferns, leaving a faint teal light trail, mist curling around its feet in the dark forest.",
+      resolution: "2K",
+      duration: 12,
+      ratio: "9:16",
+      refs: [FOREST],
+      imageUrl: FOREST,
+    }),
+  ];
+  return { tasks, keys: [key], activeKeyId: key.id, region: "intl", creditsUsed: 84 };
 }
 
 function load(): Persisted {
@@ -87,6 +157,8 @@ function load(): Persisted {
   }
   return seed();
 }
+
+const ACTIVE: TaskStatus[] = ["queued", "running"];
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const init = useMemo(load, []);
@@ -120,75 +192,67 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const dismissToast = useCallback((id: string) => setToasts((t) => t.filter((x) => x.id !== id)), []);
 
-  const pushWire = useCallback((line: Omit<WireLine, "t">) => {
-    setWire((w) => [...w.slice(-48), { ...line, t: Date.now() }]);
-  }, []);
-
-  /* ---------- lifecycle engine ---------- */
+  /* ---------- lifecycle engine (simulated v2 task flow) ---------- */
   useEffect(() => {
     const iv = window.setInterval(() => {
       const now = Date.now();
       const current = tasksRef.current;
-      if (!current.some((t) => t.status === "Queueing" || t.status === "Preparing" || t.status === "Generating")) return;
+      if (!current.some((t) => ACTIVE.includes(t.status))) return;
 
       const events: Omit<WireLine, "t">[] = [];
       const next = current.map((t) => {
-        if (t.status !== "Queueing" && t.status !== "Preparing" && t.status !== "Generating") return t;
+        if (!ACTIVE.includes(t.status)) return t;
         const dt = 0.5;
         const elapsed = t.elapsed + dt;
-        const qEnd = STAGE.Queueing;
-        const pEnd = qEnd + STAGE.Preparing;
-        const gEnd = pEnd + STAGE.Generating;
 
         let status: TaskStatus = t.status;
         let progress = t.progress;
         let polls = t.polls;
         let imageUrl = t.imageUrl;
-        let fileId = t.fileId;
+        let contentUrl = t.contentUrl;
         let error = t.error;
         let finishedAt = t.finishedAt;
+        let ratio = t.ratio;
 
-        if (elapsed < qEnd) status = "Queueing";
-        else if (elapsed < pEnd) {
-          status = "Preparing";
-          if (t.status === "Queueing") {
+        const short = t.taskId.slice(0, 6) + "…";
+        const path = API.query(short);
+
+        if (elapsed < QUEUE_TIME) {
+          status = "queued";
+          if (t.status !== "queued") {
             polls += 1;
-            events.push({ method: "GET", path: `/v1/query/video_generation?task_id=${t.taskId.slice(0, 10)}…`, status: 200, note: "Queueing" });
+            events.push({ method: "GET", path, status: 200, note: "status: queued" });
           }
-        } else if (elapsed < gEnd) {
-          status = "Generating";
-          progress = Math.min(99, Math.round(((elapsed - pEnd) / STAGE.Generating) * 100));
-          if (t.status === "Preparing") {
+        } else if (elapsed < QUEUE_TIME + RUN_TIME) {
+          status = "running";
+          progress = Math.min(99, Math.round(((elapsed - QUEUE_TIME) / RUN_TIME) * 100));
+          if (t.status === "queued") {
             polls += 1;
-            events.push({ method: "GET", path: `/v1/query/video_generation?task_id=${t.taskId.slice(0, 10)}…`, status: 200, note: "Preparing" });
-          }
-          if (t.status !== "Generating" || Math.floor(progress / 25) > Math.floor(t.progress / 25)) {
-            if (t.status === "Generating" && progress < 99) {
-              polls += 1;
-              events.push({ method: "GET", path: `/v1/query/video_generation?task_id=${t.taskId.slice(0, 10)}…`, status: 200, note: `Generating ${progress}%` });
-            }
+            events.push({ method: "GET", path, status: 200, note: "status: running" });
+          } else if (Math.floor(progress / 25) > Math.floor(t.progress / 25) && progress < 99) {
+            polls += 1;
+            events.push({ method: "GET", path, status: 200, note: `status: running · ${progress}%` });
           }
         } else {
-          // settle
           const fail = parseInt(t.taskId.slice(-2), 10) % 9 === 0 && !t.imageUrl;
           if (fail) {
-            status = "Fail";
-            error = "Render node returned E-4002: frame scheduler timeout. Retry or shorten duration.";
+            status = "failed";
+            error = "generation_error — frame scheduler timed out (E-4002). Retry, or shorten duration / resolution.";
             polls += 1;
-            events.push({ method: "GET", path: `/v1/query/video_generation?task_id=${t.taskId.slice(0, 10)}…`, status: 200, note: "Fail · E-4002" });
+            events.push({ method: "GET", path, status: 200, note: "status: failed" });
           } else {
-            status = "Success";
+            status = "succeeded";
             progress = 100;
-            fileId = fileId ?? genFileId();
-            imageUrl = imageUrl ?? pickStill(t.prompt).url;
+            imageUrl = imageUrl ?? (t.refs?.[0] || t.firstFrame || pickStill(t.prompt).url);
+            contentUrl = contentUrl ?? contentUrlFor(t.taskId);
+            if (ratio === "adaptive" && t.mode !== "i2v") ratio = "16:9";
             polls += 1;
-            events.push({ method: "GET", path: `/v1/query/video_generation?task_id=${t.taskId.slice(0, 10)}…`, status: 200, note: "Success · file ready" });
-            events.push({ method: "GET", path: `/v1/files/retrieve?file_id=${fileId.slice(0, 10)}…`, status: 200, note: "download_url issued" });
+            events.push({ method: "GET", path, status: 200, note: "status: succeeded · content.url ready" });
           }
           finishedAt = now;
         }
 
-        return { ...t, elapsed, status, progress, polls, imageUrl, fileId, error, finishedAt };
+        return { ...t, elapsed, status, progress, polls, imageUrl, contentUrl, error, finishedAt, ratio };
       });
 
       if (events.length) setWire((w) => [...w, ...events.map((e) => ({ ...e, t: Date.now() }))].slice(-48));
@@ -200,23 +264,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   /* ---------- actions ---------- */
   const generate = useCallback(
     (input: ComposeInput): GenTask | null => {
-      const cost = estimateCost(input.mode, input.model, input.resolution, input.duration);
+      const cost = estimateCost(input.model, input.resolution, input.duration);
       if (creditsUsed + cost > CREDITS_BUDGET) {
         toast("err", `Insufficient credits — needs ${cost}, ${CREDITS_BUDGET - creditsUsed} remaining this cycle.`);
         return null;
       }
+      // i2v ratio is always adaptive server-side
+      const ratio: Ratio = input.mode === "i2v" ? "adaptive" : input.ratio;
       const task: GenTask = {
         id: uid(),
         taskId: genTaskId(),
         mode: input.mode,
         model: input.model,
         prompt: input.prompt,
-        resolution: input.mode === "director" ? "768P" : input.resolution,
-        duration: input.mode === "director" ? 6 : input.duration,
-        promptOptimizer: input.promptOptimizer,
-        camera: input.mode === "director" ? input.camera : undefined,
+        resolution: input.resolution,
+        duration: input.duration,
+        ratio,
         firstFrame: input.mode === "i2v" ? input.firstFrame : undefined,
-        status: "Queueing",
+        lastFrame: input.mode === "i2v" ? input.lastFrame : undefined,
+        refs: input.mode === "r2v" ? input.refs : undefined,
+        status: "queued",
         progress: 0,
         elapsed: 0,
         polls: 0,
@@ -225,11 +292,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       };
       setTasks((ts) => [task, ...ts].slice(0, 40));
       setCreditsUsed((c) => c + cost);
-      pushWire({ method: "POST", path: "/v1/video_generation", status: 200, note: `task_id ${task.taskId.slice(0, 10)}… · ${task.model}` });
-      toast("ok", `Task queued on ${task.model} — est. ${cost} credits`);
+      setWire((w) =>
+        [...w, { t: Date.now(), method: "POST" as const, path: API.create, status: 200, note: `task_id ${task.taskId.slice(0, 6)}… · ${task.model}` }].slice(-48)
+      );
+      toast("ok", `Task created on ${task.model} — ${task.duration}s · ${task.resolution} · ~${cost} credits`);
       return task;
     },
-    [creditsUsed, pushWire, toast]
+    [creditsUsed, toast]
   );
 
   const retry = useCallback(
@@ -237,14 +306,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setTasks((ts) =>
         ts.map((t) =>
           t.id === id
-            ? { ...t, status: "Queueing", progress: 0, elapsed: 0, polls: 0, error: undefined, taskId: genTaskId(), finishedAt: undefined, createdAt: Date.now() }
+            ? { ...t, status: "queued" as TaskStatus, progress: 0, elapsed: 0, polls: 0, error: undefined, taskId: genTaskId(), contentUrl: undefined, finishedAt: undefined, createdAt: Date.now() }
             : t
         )
       );
-      pushWire({ method: "POST", path: "/v1/video_generation", status: 200, note: "retry · new task_id issued" });
-      toast("ok", "Task re-queued with a fresh task_id");
+      setWire((w) => [...w, { t: Date.now(), method: "POST" as const, path: API.create, status: 200, note: "retry · fresh task_id issued" }].slice(-48));
+      toast("ok", "Task re-created with a fresh task_id");
     },
-    [pushWire, toast]
+    [toast]
   );
 
   const removeTask = useCallback((id: string) => {
@@ -252,19 +321,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const clearFinished = useCallback(() => {
-    setTasks((ts) => ts.filter((t) => t.status === "Queueing" || t.status === "Preparing" || t.status === "Generating"));
+    setTasks((ts) => ts.filter((t) => ACTIVE.includes(t.status)));
   }, []);
 
   const addKey = useCallback(
     (name: string, key: string): boolean => {
       if (key.trim().length < 12) {
-        toast("warn", "That key looks too short — MiniMax keys are long bearer tokens.");
+        toast("err", "Key looks too short — MiniMax keys are long bearer tokens.");
         return false;
       }
       const k: ApiKey = { id: uid(), name: name.trim() || "Untitled key", key: key.trim(), createdAt: Date.now() };
-      setKeys((ks) => [...ks, k]);
+      setKeys((ks) => [k, ...ks]);
       setActiveKeyIdState(k.id);
-      toast("ok", `Key “${k.name}” added and set active`);
+      toast("ok", `Key “${k.name}” stored & activated`);
       return true;
     },
     [toast]
@@ -277,21 +346,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setActiveKeyIdState((cur) => (cur === id ? next[0]?.id ?? null : cur));
         return next;
       });
-      toast("warn", "Key revoked from this console");
+      toast("warn", "Key revoked from local storage");
     },
     [toast]
   );
 
-  const setActiveKey = useCallback((id: string) => setActiveKeyIdState(id), []);
+  const setActiveKey = useCallback((id: string) => {
+    setActiveKeyIdState(id);
+  }, []);
+
   const setRegion = useCallback(
     (r: Region) => {
       setRegionState(r);
-      toast("ok", r === "intl" ? "Endpoint → api.minimax.io (international)" : "Endpoint → api.minimaxi.com (mainland China)");
+      toast("ok", r === "intl" ? "Region → International (api.minimax.io)" : "Region → China (api.minimaxi.com)");
     },
     [toast]
   );
 
-  const running = tasks.filter((t) => t.status === "Queueing" || t.status === "Preparing" || t.status === "Generating").length;
+  const running = tasks.filter((t) => ACTIVE.includes(t.status)).length;
 
   const value: AppState = {
     tasks,
@@ -319,8 +391,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
 export function useApp(): AppState {
   const v = useContext(Ctx);
-  if (!v) throw new Error("useApp outside AppProvider");
+  if (!v) throw new Error("useApp must be used inside AppProvider");
   return v;
 }
-
-export { CREDITS_BUDGET };

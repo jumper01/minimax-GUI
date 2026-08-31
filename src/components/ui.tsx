@@ -139,14 +139,13 @@ export const IconSpark = (p: IconProps) => (
 
 export function StatusBadge({ status, pulse }: { status: TaskStatus; pulse?: boolean }) {
   const map: Record<TaskStatus, { c: string; dot: string; label: string }> = {
-    Queueing: { c: "text-steel-300 border-steel-500/40 bg-steel-900/40", dot: "bg-steel-400", label: "Queueing" },
-    Preparing: { c: "text-brass-300 border-brass-500/40 bg-brass-900/40", dot: "bg-brass-400", label: "Preparing" },
-    Generating: { c: "text-rec-400 border-rec-500/40 bg-rec-900/40", dot: "bg-rec-500", label: "Generating" },
-    Success: { c: "text-jade-300 border-jade-500/40 bg-jade-900/40", dot: "bg-jade-400", label: "Success" },
-    Fail: { c: "text-rec-400 border-rec-500/40 bg-rec-900/40", dot: "bg-rec-600", label: "Fail" },
+    queued: { c: "text-steel-300 border-steel-500/40 bg-steel-900/40", dot: "bg-steel-400", label: "queued" },
+    running: { c: "text-brass-300 border-brass-500/40 bg-brass-900/40", dot: "bg-brass-400", label: "running" },
+    succeeded: { c: "text-jade-300 border-jade-500/40 bg-jade-900/40", dot: "bg-jade-400", label: "succeeded" },
+    failed: { c: "text-rec-400 border-rec-500/40 bg-rec-900/40", dot: "bg-rec-600", label: "failed" },
   };
   const m = map[status];
-  const active = pulse && (status === "Queueing" || status === "Preparing" || status === "Generating");
+  const active = pulse && (status === "queued" || status === "running");
   return (
     <span className={`inline-flex items-center gap-1.5 border px-2 py-[3px] font-mono text-[10px] uppercase tracking-[0.14em] ${m.c}`}>
       <span className="relative flex h-1.5 w-1.5">
@@ -192,9 +191,9 @@ function highlightCurl(src: string): React.ReactNode[] {
       parts.push(<span key="pre">{line.slice(0, idx)}</span>);
       parts.push(<span key="cmd" className="tok-cmd">curl</span>);
       let rest = line.slice(idx + 4);
-      rest = rest.replace(/(-X POST|-H|-d)/g, "§$1§");
+      rest = rest.replace(/(--request POST|--request GET|--url|--header|--data|-X POST|-H|-d)/g, "§$1§");
       rest.split("§").forEach((seg, j) => {
-        if (seg === "-X POST" || seg === "-H" || seg === "-d") parts.push(<span key={j} className="tok-flag">{seg}</span>);
+        if (/^(--request (POST|GET)|--url|--header|--data|-X POST|-H|-d)$/.test(seg)) parts.push(<span key={j} className="tok-flag">{seg}</span>);
         else {
           const sm = seg.match(/^'(.*)'$/s);
           if (sm) {

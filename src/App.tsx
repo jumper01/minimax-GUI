@@ -161,7 +161,7 @@ function Slate() {
     return () => window.clearInterval(iv);
   }, []);
 
-  const ticker = "HAILUO-02 · VIDEO-01 · VIDEO-01-LIVE · I2V-01 · T2V-01-DIRECTOR · 768P · 1080P · 25 FPS · 6S · 10S · PROMPT OPTIMIZER · FIRST-FRAME · CAMERA CONTROL · ";
+  const ticker = "MINIMAX-H3 · MINIMAX-H3-MAX · T2VA · I2VA · R2VA · 2K · 768P · 480P · 4–15S · 21:9 · 16:9 · 1:1 · 9:16 · FIRST_FRAME · LAST_FRAME · REFERENCE_IMAGE · TASK_ID ASYNC · ";
 
   return (
     <div className="relative overflow-hidden">
@@ -172,7 +172,7 @@ function Slate() {
             <div className="mb-4 flex flex-wrap items-center gap-2 font-mono text-[10px] uppercase tracking-[0.22em] text-mut">
               <span className="border border-line-soft px-2 py-1">scene 01</span>
               <span className="border border-line-soft px-2 py-1">take {String(app.tasks.length + 1).padStart(2, "0")}</span>
-              <span className="border border-line-soft px-2 py-1 text-steel-300">roll · video_generation</span>
+              <span className="border border-line-soft px-2 py-1 text-steel-300">roll · /v2/video_generation</span>
             </div>
           </Reveal>
           <Reveal delay={80}>
@@ -184,15 +184,16 @@ function Slate() {
           </Reveal>
           <Reveal delay={160}>
             <p className="mt-5 max-w-xl text-[14.5px] leading-relaxed text-mut">
-              A field console for the MiniMax video generation APIs — compose <span className="font-mono text-[13px] text-steel-300">POST /v1/video_generation</span>{" "}
-              payloads visually, watch tasks walk the state machine in real time, and pull signed file URLs when the frames land.
+              A field console for the MiniMax video generation APIs — compose <span className="font-mono text-[13px] text-steel-300">POST /v2/video_generation</span>{" "}
+              payloads for the H3 engine visually, watch task_ids walk the state machine in real time, and pull{" "}
+              <span className="font-mono text-[13px] text-jade-300">content.url</span> when the frames land.
             </p>
           </Reveal>
           <Reveal delay={240}>
             <div className="mt-6 flex flex-wrap gap-x-6 gap-y-2 font-mono text-[10.5px] uppercase tracking-[0.16em] text-dim">
-              <span>◍ 5 models wired</span>
+              <span>◍ H3 + H3-Max wired</span>
               <span>◍ 2 regions</span>
-              <span>◍ async task_id flow</span>
+              <span>◍ T2V · I2V · R2V</span>
               <span className="text-jade-400">◍ simulated locally</span>
             </div>
           </Reveal>

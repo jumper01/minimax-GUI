@@ -1,27 +1,42 @@
-export type Mode = "t2v" | "i2v" | "director";
+/* ------------------------------------------------------------------ */
+/* MiniMax video generation API — v2 surface (H3 generation engine)    */
+/* POST https://api.minimax.io/v2/video_generation                     */
+/* GET  https://api.minimax.io/v2/query/video_generation/{task_id}     */
+/* ------------------------------------------------------------------ */
+
+export type Mode = "t2v" | "i2v" | "r2v";
 export type Region = "intl" | "cn";
-export type TaskStatus = "Queueing" | "Preparing" | "Generating" | "Success" | "Fail";
-export type Resolution = "768P" | "1080P";
-export type Duration = 6 | 10;
+export type TaskStatus = "queued" | "running" | "succeeded" | "failed";
+export type Resolution = "480P" | "768P" | "2K";
+export type Ratio = "adaptive" | "21:9" | "16:9" | "4:3" | "1:1" | "3:4" | "9:16";
+export type FrameRole = "first_frame" | "last_frame" | "reference_image";
+
+export interface ContentItem {
+  type: "text" | "image_url";
+  text?: string;
+  role?: FrameRole;
+  image_url?: { url: string };
+}
 
 export interface GenTask {
   id: string;
-  taskId: string; // MiniMax-style numeric task id
-  fileId?: string;
+  taskId: string; // numeric id, e.g. "424010985738629"
   mode: Mode;
   model: string;
   prompt: string;
   resolution: Resolution;
-  duration: Duration;
-  promptOptimizer: boolean;
-  camera?: string;
-  firstFrame?: string; // image url (demo stand-in for base64 payload)
+  duration: number; // 4..15 seconds
+  ratio: Ratio; // i2v is always "adaptive"
+  firstFrame?: string; // image url · role=first_frame
+  lastFrame?: string; // image url · role=last_frame
+  refs?: string[]; // image urls · role=reference_image
   status: TaskStatus;
-  progress: number; // 0..100 inside Generating
+  progress: number; // 0..100 inside running
   elapsed: number; // simulated seconds processed
   polls: number;
-  cost: number;
-  imageUrl?: string;
+  cost: number; // simulated credits
+  imageUrl?: string; // preview stand-in for the generated frame
+  contentUrl?: string; // task.content.url on success
   error?: string;
   createdAt: number;
   finishedAt?: number;
@@ -47,35 +62,84 @@ export const REGION_HOST: Record<Region, string> = {
   cn: "api.minimaxi.com",
 };
 
-export const MODELS: Record<Mode, { id: string; label: string; tag: string; base: number }[]> = {
-  t2v: [
-    { id: "video-01", label: "Hailuo Video-01", tag: "768P · flagship T2V", base: 10 },
-    { id: "video-01-live", label: "Video-01-Live", tag: "live-action people", base: 12 },
-    { id: "hailuo-02", label: "MiniMax-Hailuo-02", tag: "1080P · up to 10s", base: 18 },
-  ],
-  i2v: [
-    { id: "i2v-01", label: "Hailuo I2V-01", tag: "first-frame animation", base: 12 },
-    { id: "hailuo-02", label: "MiniMax-Hailuo-02", tag: "first / last frame", base: 18 },
-  ],
-  director: [
-    { id: "T2V-01-Director", label: "T2V-01-Director", tag: "camera movement control", base: 14 },
-  ],
+export const API = {
+  create: "/v2/video_generation",
+  query: (taskId: string) => `/v2/query/video_generation/${taskId}`,
 };
 
-export const CAMERA_MOVES = [
-  "Zoom In",
-  "Zoom Out",
-  "Pan Left",
-  "Pan Right",
-  "Tilt Up",
-  "Tilt Down",
-  "Crane Up",
-  "Crane Down",
-  "Travelling",
-  "Orbit",
+/* ------------------------- model catalog ------------------------- */
+
+export interface ModelInfo {
+  id: string;
+  short: string;
+  tag: string;
+  resolutions: Resolution[];
+  durMin: number;
+  durMax: number;
+  modes: Mode[];
+  features: string[];
+  creditPerSec: Record<Resolution, number>;
+}
+
+export const MODEL_LIST: ModelInfo[] = [
+  {
+    id: "MiniMax-H3",
+    short: "H3",
+    tag: "flagship H3 generation engine",
+    resolutions: ["768P", "2K"],
+    durMin: 4,
+    durMax: 15,
+    modes: ["t2v", "i2v", "r2v"],
+    features: ["text-to-video", "image-to-video · first / middle / last frame", "reference-to-video · image / video / audio", "768P · 2K output"],
+    creditPerSec: { "480P": 2.4, "768P": 3.5, "2K": 6 },
+  },
+  {
+    id: "MiniMax-H3-Max",
+    short: "H3·MAX",
+    tag: "fast variant · quick turnaround",
+    resolutions: ["480P", "768P"],
+    durMin: 5,
+    durMax: 15,
+    modes: ["t2v", "i2v"],
+    features: ["text-to-video", "image-to-video · first / last frame", "480P · 768P output", "no middle frames · no reference mode"],
+    creditPerSec: { "480P": 1.6, "768P": 2.4, "2K": 0 },
+  },
 ];
 
+export function modelById(id: string): ModelInfo {
+  return MODEL_LIST.find((m) => m.id === id) ?? MODEL_LIST[0];
+}
+
+export const RATIOS: Exclude<Ratio, "adaptive">[] = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
+
+export const LEGACY_MODELS = [
+  { id: "video-01", note: "768P · 6s · T2V flagship of the v1 era" },
+  { id: "video-01-live", note: "live-action people · 768P" },
+  { id: "i2v-01", note: "first-frame animation · 720P" },
+  { id: "T2V-01-Director", note: "camera_movement control · 15 movements" },
+  { id: "MiniMax-Hailuo-02", note: "1080P · up to 10s · first / last frame" },
+];
+
+export function ratioToAspect(r: Ratio): string {
+  switch (r) {
+    case "21:9": return "21 / 9";
+    case "4:3": return "4 / 3";
+    case "1:1": return "1 / 1";
+    case "3:4": return "3 / 4";
+    case "9:16": return "9 / 16";
+    default: return "16 / 9";
+  }
+}
+
+/* ------------------------- demo media ------------------------- */
+
 export const STILLS = [
+  {
+    id: "space",
+    url: "https://image.qwenlm.ai/generated-images/b4e31982-ddb8-417d-8290-b117e716dd79/_result.png",
+    label: "Fleet jump",
+    keys: ["space", "opera", "fleet", "captain", "window", "jump", "bridge", "sci-fi", "starship", "hyperspace"],
+  },
   {
     id: "harbor",
     url: "https://image.qwenlm.ai/generated-images/0764fe62-7bcc-40a6-b666-bdbc1ba23417/_result.png",
@@ -110,6 +174,11 @@ export const STILLS = [
 
 export const PROMPT_IDEAS: { label: string; prompt: string }[] = [
   {
+    label: "Space-opera teaser",
+    prompt:
+      "Epic space-opera theatrical teaser: a female captain stands alone before a massive observation window as the last fleet gathers and jumps away in a blinding flash, the bridge shaking, leaving her behind.",
+  },
+  {
     label: "Harbor flyover",
     prompt:
       "Aerial drone sweep over a neon harbor city at dusk, container cranes silhouetted against amber sodium light, teal reflections rippling on dark water, slow cinematic descent.",
@@ -136,15 +205,16 @@ export const PROMPT_IDEAS: { label: string; prompt: string }[] = [
   },
 ];
 
-/* ---------------- helpers ---------------- */
+/* ------------------------- helpers ------------------------- */
 
 export function uid(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 }
 
 export function genTaskId(): string {
-  let s = "18";
-  for (let i = 0; i < 17; i++) s += Math.floor(Math.random() * 10);
+  // 15-digit numeric id like the docs example 424010985738629
+  let s = String(1 + Math.floor(Math.random() * 8));
+  for (let i = 0; i < 14; i++) s += Math.floor(Math.random() * 10);
   return s;
 }
 
@@ -189,67 +259,111 @@ export function pickStill(prompt: string): (typeof STILLS)[number] {
   return best;
 }
 
-export function estimateCost(mode: Mode, model: string, res: Resolution, dur: Duration): number {
-  const base = MODELS[mode].find((m) => m.id === model)?.base ?? 12;
-  return base + (res === "1080P" ? 4 : 0) + (dur === 10 ? 6 : 0);
+export function contentUrlFor(taskId: string): string {
+  const seed = genFileId().slice(0, 12);
+  return `https://cdn.hailuoai.com/prod/v2/renders/${taskId.slice(0, 8)}/${seed}_denoise_final.mp4`;
 }
 
-/* ---------------- request builders ---------------- */
+export function estimateCost(model: string, resolution: Resolution, duration: number): number {
+  const m = modelById(model);
+  const per = m.creditPerSec[resolution] || 2.4;
+  return Math.max(4, Math.round(per * duration));
+}
 
-export function buildBody(t: Pick<GenTask, "mode" | "model" | "prompt" | "resolution" | "duration" | "promptOptimizer" | "camera" | "firstFrame">): Record<string, unknown> {
-  const body: Record<string, unknown> = { model: t.model, prompt: t.prompt };
-  if (t.mode === "i2v") {
-    body.first_frame_image = t.firstFrame
-      ? "data:image/jpeg;base64,/9j/4AAQSkZJRg…(" + "A1b2".repeat(4) + "…)"
-      : "<base64 image payload>";
+/* ------------------------- request builders ------------------------- */
+
+export function buildContent(input: {
+  prompt: string;
+  mode: Mode;
+  firstFrame?: string;
+  lastFrame?: string;
+  refs?: string[];
+}): ContentItem[] {
+  const content: ContentItem[] = [{ type: "text", text: input.prompt }];
+  if (input.mode === "i2v") {
+    if (input.firstFrame) content.push({ type: "image_url", role: "first_frame", image_url: { url: input.firstFrame } });
+    if (input.lastFrame) content.push({ type: "image_url", role: "last_frame", image_url: { url: input.lastFrame } });
   }
-  if (t.mode === "director") {
-    body.resolution = "768P";
-    body.duration = 6;
-    if (t.camera) body.camera_movement = t.camera;
-  } else {
-    body.resolution = t.resolution;
-    body.duration = t.duration;
+  if (input.mode === "r2v" && input.refs?.length) {
+    for (const r of input.refs) content.push({ type: "image_url", role: "reference_image", image_url: { url: r } });
   }
-  body.prompt_optimizer = t.promptOptimizer;
+  return content;
+}
+
+export function buildBody(input: {
+  model: string;
+  prompt: string;
+  mode: Mode;
+  resolution: Resolution;
+  duration: number;
+  ratio: Ratio;
+  firstFrame?: string;
+  lastFrame?: string;
+  refs?: string[];
+}): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    model: input.model,
+    content: buildContent(input),
+    resolution: input.resolution,
+    duration: input.duration,
+  };
+  // i2v ratio is always adaptive (driven by the input image) — omit it.
+  if (input.mode !== "i2v" && input.ratio !== "adaptive") body.ratio = input.ratio;
   return body;
 }
 
 export function buildCreateCurl(host: string, key: string, body: Record<string, unknown>): string {
   return [
-    `curl -X POST 'https://${host}/v1/video_generation' \\`,
-    `  -H 'Authorization: Bearer ${key}' \\`,
-    `  -H 'Content-Type: application/json' \\`,
-    `  -d '${JSON.stringify(body)}'`,
+    `curl --request POST \\`,
+    `  --url https://${host}${API.create} \\`,
+    `  --header 'Authorization: Bearer ${key}' \\`,
+    `  --header 'Content-Type: application/json' \\`,
+    `  --data '${JSON.stringify(body, null, 2)}'`,
   ].join("\n");
 }
 
 export function buildQueryCurl(host: string, key: string, taskId: string): string {
   return [
-    `curl 'https://${host}/v1/query/video_generation?task_id=${taskId}' \\`,
-    `  -H 'Authorization: Bearer ${key}'`,
+    `curl --request GET \\`,
+    `  --url https://${host}${API.query(taskId)} \\`,
+    `  --header 'Authorization: Bearer ${key}'`,
   ].join("\n");
 }
 
-export function sampleResponse(taskId: string): string {
-  return JSON.stringify(
-    {
-      task_id: taskId,
-      base_resp: { status_code: 0, status_msg: "success" },
-      file_id: genFileId().slice(0, 16) + "…",
-    },
-    null,
-    2
-  );
+export function sampleCreateResponse(taskId: string): string {
+  return JSON.stringify({ task_id: taskId }, null, 2);
 }
 
-export function sampleQueryResponse(taskId: string, fileId: string, fileUrl: string): string {
+export function sampleQueryResponse(t: {
+  taskId: string;
+  model: string;
+  resolution: Resolution;
+  duration: number;
+  ratio: Ratio;
+  imageCount?: number;
+}): string {
+  const created = Math.floor(Date.now() / 1000) - 417;
   return JSON.stringify(
     {
-      task_id: taskId,
-      base_resp: { status_code: 0, status_msg: "success" },
-      file_id: fileId,
-      file_url: fileUrl,
+      task: {
+        id: t.taskId,
+        model: t.model,
+        status: "succeeded",
+        created_at: created,
+        updated_at: created + 417,
+        content: { url: contentUrlFor(t.taskId) },
+        resolution: t.resolution,
+        duration: t.duration,
+        usage: {
+          total_seconds: t.duration,
+          input_seconds: 0,
+          output_seconds: t.duration,
+          input_image_count: t.imageCount ?? 0,
+        },
+        ratio: t.ratio,
+        task_type: "generation",
+        modality: "video",
+      },
     },
     null,
     2

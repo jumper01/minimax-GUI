@@ -1,17 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { fmtAgo, fmtClock } from "../lib/api";
+import { TaskStatus, fmtAgo, fmtClock, sampleQueryResponse } from "../lib/api";
 import { useApp } from "../lib/store";
 import { GeneratingFrame, VideoPreview } from "./VideoPreview";
-import { CopyChip, IconChevron, IconRetry, IconSignal, IconTrash } from "./ui";
+import { CodeBlock, CopyChip, IconChevron, IconRetry, IconSignal, IconTrash } from "./ui";
+
+const ACTIVE: TaskStatus[] = ["queued", "running"];
+
+function modeTag(t: { mode: string; firstFrame?: string; lastFrame?: string; refs?: string[] }): string {
+  if (t.mode === "i2v") {
+    if (t.firstFrame && t.lastFrame) return "i2v · first+last";
+    if (t.lastFrame) return "i2v · last_frame";
+    return "i2v · first_frame";
+  }
+  if (t.mode === "r2v") return `r2v · ref×${t.refs?.length ?? 0}`;
+  return "t2v";
+}
 
 export function Queue() {
   const app = useApp();
   const [open, setOpen] = useState<string | null>(app.tasks[0]?.id ?? null);
   const logRef = useRef<HTMLDivElement>(null);
 
-  const running = app.tasks.filter((t) => ["Queueing", "Preparing", "Generating"].includes(t.status));
-  const finished = app.tasks.filter((t) => t.status === "Success").length;
-  const failed = app.tasks.filter((t) => t.status === "Fail").length;
+  const running = app.tasks.filter((t) => ACTIVE.includes(t.status));
+  const finished = app.tasks.filter((t) => t.status === "succeeded").length;
+  const failed = app.tasks.filter((t) => t.status === "failed").length;
   const avgRender = useMemo(() => {
     const done = app.tasks.filter((t) => t.finishedAt);
     if (!done.length) return "—";
@@ -34,8 +46,8 @@ export function Queue() {
       {/* stat strip */}
       <div className="mb-6 grid grid-cols-2 gap-px border border-line-soft bg-line-soft sm:grid-cols-4">
         {[
-          { label: "in pipeline", value: String(running.length), tone: running.length ? "text-rec-400" : "text-paper" },
-          { label: "renders done", value: String(finished), tone: "text-jade-400" },
+          { label: "in pipeline", value: String(running.length), tone: running.length ? "text-brass-400" : "text-paper" },
+          { label: "succeeded", value: String(finished), tone: "text-jade-400" },
           { label: "failed", value: String(failed), tone: failed ? "text-rec-400" : "text-paper" },
           { label: "avg wall time", value: avgRender, tone: "text-brass-400" },
         ].map((s) => (
@@ -52,7 +64,7 @@ export function Queue() {
           <div className="panel">
             <div className="hairline-b flex items-center justify-between px-5 py-3.5">
               <span className="panel-title">Pipeline · task_id tracker</span>
-              {app.tasks.some((t) => ["Success", "Fail"].includes(t.status)) && (
+              {app.tasks.some((t) => t.status === "succeeded" || t.status === "failed") && (
                 <button
                   onClick={() => {
                     app.clearFinished();
@@ -80,7 +92,7 @@ export function Queue() {
             ) : (
               <ul>
                 {app.tasks.map((t) => {
-                  const active = ["Queueing", "Preparing", "Generating"].includes(t.status);
+                  const active = ACTIVE.includes(t.status);
                   const expanded = open === t.id;
                   return (
                     <li key={t.id} className={`hairline-b last:border-b-0 ${expanded ? "bg-ink-800/50" : "transition-colors hover:bg-ink-800/30"}`}>
@@ -90,15 +102,15 @@ export function Queue() {
                           <span className="block truncate text-[13px] text-paper/90">{t.prompt}</span>
                           <span className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] uppercase tracking-[0.12em] text-dim">
                             <span className="text-mut">{t.model}</span>
-                            <span>{t.resolution} · {t.duration}s</span>
-                            {t.camera && <span className="text-rec-400">{t.camera}</span>}
+                            <span>{t.resolution} · {t.duration}s · {t.ratio}</span>
+                            <span className="text-steel-300">{modeTag(t)}</span>
                             <span>{fmtAgo(t.createdAt)}</span>
                           </span>
                         </span>
-                        {active && t.status === "Generating" && (
+                        {active && t.status === "running" && (
                           <span className="hidden w-24 shrink-0 sm:block">
                             <span className="block h-1 overflow-hidden bg-paper/10">
-                              <span className="progress-stripes block h-full bg-rec-500/80 transition-all duration-500" style={{ width: `${t.progress}%` }} />
+                              <span className="progress-stripes block h-full bg-brass-500/80 transition-all duration-500" style={{ width: `${t.progress}%` }} />
                             </span>
                             <span className="mt-1 block text-right font-mono text-[9.5px] tabular-nums text-dim">{Math.round(t.progress)}%</span>
                           </span>
@@ -109,13 +121,13 @@ export function Queue() {
                       {expanded && (
                         <div className="fade-up grid gap-4 border-t border-line-soft px-5 py-4 lg:grid-cols-5">
                           <div className="lg:col-span-3">
-                            {t.status === "Success" && t.imageUrl ? (
+                            {t.status === "succeeded" && t.imageUrl ? (
                               <VideoPreview task={t} variant={t.id.length} />
                             ) : active ? (
                               <GeneratingFrame task={t} />
-                            ) : t.status === "Fail" ? (
+                            ) : t.status === "failed" ? (
                               <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 border border-rec-500/30 bg-rec-900/20 px-6 text-center">
-                                <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-rec-400">render failed</span>
+                                <span className="font-mono text-[11px] uppercase tracking-[0.2em] text-rec-400">status: failed</span>
                                 <p className="max-w-sm text-[12px] leading-relaxed text-mut">{t.error}</p>
                               </div>
                             ) : null}
@@ -125,20 +137,36 @@ export function Queue() {
                               <div className="panel-title mb-1.5">task_id</div>
                               <CopyChip text={t.taskId} short={`${t.taskId.slice(0, 14)}…`} />
                             </div>
-                            {t.fileId && (
+                            {t.contentUrl && (
                               <div>
-                                <div className="panel-title mb-1.5">file_id</div>
-                                <CopyChip text={t.fileId} short={`${t.fileId.slice(0, 14)}…`} />
+                                <div className="panel-title mb-1.5">task.content.url</div>
+                                <CopyChip text={t.contentUrl} short={`${t.contentUrl.slice(0, 26)}…`} />
                               </div>
                             )}
                             <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 font-mono text-[10.5px] text-dim">
-                              <span>mode <span className="text-mut">{t.mode.toUpperCase()}</span></span>
+                              <span>scenario <span className="text-mut">{t.mode}</span></span>
+                              <span>ratio <span className="text-mut">{t.ratio}</span></span>
                               <span>cost <span className="text-brass-400">{t.cost} cr</span></span>
                               <span>polls <span className="text-mut">{t.polls}</span></span>
-                              <span>queued <span className="text-mut">{fmtClock(t.createdAt)}</span></span>
+                              <span>created <span className="text-mut">{fmtClock(t.createdAt)}</span></span>
+                              <span>finished <span className="text-mut">{t.finishedAt ? fmtClock(t.finishedAt) : "—"}</span></span>
                             </div>
+                            {t.status === "succeeded" && (
+                              <CodeBlock
+                                lang="json"
+                                label="last query response"
+                                code={sampleQueryResponse({
+                                  taskId: t.taskId,
+                                  model: t.model,
+                                  resolution: t.resolution,
+                                  duration: t.duration,
+                                  ratio: t.ratio,
+                                  imageCount: t.mode === "i2v" ? (t.firstFrame && t.lastFrame ? 2 : 1) : t.mode === "r2v" ? t.refs?.length ?? 0 : 0,
+                                })}
+                              />
+                            )}
                             <div className="flex flex-wrap gap-2 pt-1">
-                              {t.status === "Fail" && (
+                              {t.status === "failed" && (
                                 <button
                                   onClick={() => app.retry(t.id)}
                                   className="btn-press inline-flex items-center gap-1.5 border border-brass-500/50 bg-brass-900/30 px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-wider text-brass-300 hover:bg-brass-900/60"
@@ -146,15 +174,16 @@ export function Queue() {
                                   <IconRetry size={11} /> retry
                                 </button>
                               )}
-                              {t.status === "Success" && t.imageUrl && (
-                                <a
-                                  href={t.imageUrl}
-                                  target="_blank"
-                                  rel="noreferrer"
+                              {t.status === "succeeded" && t.contentUrl && (
+                                <button
+                                  onClick={() => {
+                                    navigator.clipboard?.writeText(t.contentUrl!).catch(() => undefined);
+                                    app.toast("ok", "content.url copied");
+                                  }}
                                   className="btn-press inline-flex items-center gap-1.5 border border-jade-500/50 bg-jade-900/30 px-3 py-1.5 font-mono text-[10.5px] uppercase tracking-wider text-jade-300 hover:bg-jade-900/60"
                                 >
-                                  <IconSignal size={11} /> open asset
-                                </a>
+                                  <IconSignal size={11} /> copy url
+                                </button>
                               )}
                               <button
                                 onClick={() => {
@@ -211,17 +240,15 @@ export function Queue() {
   );
 }
 
-function StatusMini({ status }: { status: string }) {
+function StatusMini({ status }: { status: TaskStatus }) {
   const tone =
-    status === "Success"
+    status === "succeeded"
       ? "text-jade-400 border-jade-500/40"
-      : status === "Fail"
+      : status === "failed"
         ? "text-rec-400 border-rec-500/40"
-        : status === "Generating"
-          ? "text-rec-400 border-rec-500/40"
-          : status === "Preparing"
-            ? "text-brass-300 border-brass-500/40"
-            : "text-steel-300 border-steel-500/40";
+        : status === "running"
+          ? "text-brass-300 border-brass-500/40"
+          : "text-steel-300 border-steel-500/40";
   return (
     <span className={`shrink-0 border px-2 py-[3px] font-mono text-[9.5px] uppercase tracking-[0.12em] ${tone}`}>{status}</span>
   );
